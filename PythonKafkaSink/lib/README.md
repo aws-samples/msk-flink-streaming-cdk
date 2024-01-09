@@ -1,0 +1,1 @@
+JAR files for Apache Flink application go in this folder (PythonKafkaSink/lib)

@@ -11,4 +11,4 @@ cdk.out
 
 # Ignore zips and jars
 PythonKafkaSink.zip
-PythonKafkaSink/lib/*
+*.jar
