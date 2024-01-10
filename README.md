@@ -28,10 +28,18 @@ The second use case calculates the average temperature of the sensors within a f
 
 The workflow includes the following steps:
 1. An Amazon CloudWatch event triggers an AWS Lambda function every minute.
-2. The Lambda function generates telemetry data and sends the data to Amazon Managed Streaming for Apache Kafka (Amazon MSK).
-3. The data is processed by an Apache Flink Python application hosted on Amazon Managed Service for Apache Flink.
+2. The Lambda function generates telemetry data and sends the data to Amazon Managed Streaming for Apache Kafka (Amazon MSK). With [IAM Access Control](https://docs.aws.amazon.com/msk/latest/developerguide/iam-access-control.html). 
+3. The data is processed by an Apache Flink Python application hosted on Amazon Managed Service for Apache Flink. With [IAM Access Control](https://docs.aws.amazon.com/msk/latest/developerguide/iam-access-control.html). 
 4. After processing, data with average temperature calculation is stored in Amazon S3 and data with anomaly results is sent to the output topic of the same MSK cluster.
 5. The Lambda function monitors the output stream, and processes and sends data to the appropriate destination—for this use case, Amazon Simple Notification Service (Amazon SNS).
+
+## Additions:
+- IAM Access Control for authentication and authorization to the MSK cluster from Lambda and Managed Flink. 
+- Updated to Flink 1.13.6
+
+
+## Prerequisites
+- Maven 
 
 ## To Run: 
 1. Install the required dependencies:
@@ -39,10 +47,12 @@ The workflow includes the following steps:
 pip install -r requirements.txt
 ```
 
-2. Download Apache Flink Connector for Kafka SQL ![(Source)](https://mvnrepository.com/artifact/org.apache.flink/flink-sql-connector-kafka_2.11/1.11.2)
+2. Build the jar file for the Flink SQL Connector with IAM Auth
 ```
-curl https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka_2.11/1.11.2/flink-sql-connector-kafka_2.11-1.11.2.jar --output PythonKafkaSink/lib/flink-sql-connector-kafka_2.11-1.11.2.jar
-
+cd JarPackaging
+mvn clean package
+cd ..
+cp JarPackaging/target/aws-iam-sql-kafka-connector-1.jar PythonKafkaSink/lib
 zip -r PythonKafkaSink.zip PythonKafkaSink/
 ```
 

@@ -12,3 +12,7 @@ cdk.out
 # Ignore zips and jars
 PythonKafkaSink.zip
 *.jar
+
+# Ignore Jar Packaging outputs
+JarPackaging/*
+!JarPackaging/pom.xml
