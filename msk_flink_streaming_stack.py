@@ -41,6 +41,7 @@ class FlinkStack(NestedStack):
                 vpc,
                 security_group,
                 bootstrap_brokers,
+                cluster,
                 **kwargs):
         super().__init__(scope, construct_id, **kwargs)
         
@@ -49,6 +50,9 @@ class FlinkStack(NestedStack):
             self,
             "flink-output-bucket",
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            # REMOVE FOR PRODUCTION
+            removal_policy = RemovalPolicy.DESTROY,
+            auto_delete_objects= True
         )
         
         # Bucket where code for Apache Flink is stored 
@@ -56,7 +60,6 @@ class FlinkStack(NestedStack):
             self,
             "flink-code-bucket",
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
-            # REMOVE FOR PRODUCTION
             removal_policy = RemovalPolicy.DESTROY,
             auto_delete_objects= True
         )
@@ -67,18 +70,31 @@ class FlinkStack(NestedStack):
             extract=False
         )
         
-        
-        
         flink_app_role = iam.Role(self, "FlinkAppRole",
             assumed_by=iam.ServicePrincipal("kinesisanalytics.amazonaws.com"),
         )
         
-
-          
+        flink_app_role.add_to_policy(iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            actions=[
+                "kafka-cluster:Connect",
+                "kafka-cluster:DescribeCluster",
+                "kafka-cluster:AlterCluster",
+                "kafka-cluster:*Topic*",
+                "kafka-cluster:WriteData",
+                "kafka-cluster:ReadData",
+                "kafka-cluster:DescribeGroup"
+            ],
+            resources=[
+                "*" # WARNING: Tighten to MSK cluster
+            ]
+            )
+        )
+        
         # Apache Flink Application
         flink_app = flink.Application(self, "Flink-App",
             code=flink.ApplicationCode.from_asset("./PythonKafkaSink.zip"),
-            runtime=flink.Runtime.FLINK_1_11,
+            runtime=flink.Runtime.FLINK_1_13,
             vpc=vpc,
             security_groups=[security_group],
             role=flink_app_role,
@@ -86,7 +102,7 @@ class FlinkStack(NestedStack):
             {
                "kinesis.analytics.flink.run.options" : {
                     "python" : "PythonKafkaSink/main.py", 
-                    "jarfile" : "PythonKafkaSink/lib/flink-sql-connector-kafka_2.11-1.11.2.jar"
+                    "jarfile" : "PythonKafkaSink/lib/aws-iam-sql-kafka-connector-1.jar"
                 }
                     ,
                "producer.config.0" : {
@@ -113,7 +129,7 @@ class LambdaStack(NestedStack):
             construct_id: str,
             vpc,
             security_group,
-            cluster_arn,
+            cluster,
             **kwargs):
         super().__init__(scope, construct_id, **kwargs)
     
@@ -134,13 +150,14 @@ class LambdaStack(NestedStack):
             actions=[
                 "kafka-cluster:Connect",
                 "kafka-cluster:DescribeCluster",
+                "kafka-cluster:AlterCluster",
                 "kafka-cluster:*Topic*",
                 "kafka-cluster:WriteData",
                 "kafka-cluster:ReadData",
                 "kafka-cluster:DescribeGroup"
             ],
             resources=[
-                cluster_arn
+                "*" # WARNING: Tighten to MSK cluster
             ]
             )
         )
@@ -158,10 +175,10 @@ class LambdaStack(NestedStack):
                 ],
             ),),
             handler="kfpLambdaStreamProducer.lambda_handler",
-            timeout=Duration.seconds(50),
+            timeout=Duration.seconds(150),
             runtime=lambda_.Runtime.PYTHON_3_8,
             environment={'topicName':'kfp_sensor_topic',
-                         'mskClusterArn':cluster_arn},
+                         'mskClusterArn':cluster.cluster_arn},
             vpc=vpc,
             vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType('PRIVATE_WITH_EGRESS')),
             role=lambda_role,
@@ -188,7 +205,7 @@ class LambdaStack(NestedStack):
         )
         
         sns_lambdaFn.add_event_source(aws_lambda_event_sources.ManagedKafkaEventSource(
-            cluster_arn=cluster_arn,
+            cluster_arn=cluster.cluster_arn,
             topic='kfp_sns_topic',
             starting_position=lambda_.StartingPosition.TRIM_HORIZON
         ))
@@ -215,6 +232,7 @@ class MSKFlinkStreamingStack(Stack):
             nat_gateways=1,
             )
             
+            
         # Security Group that allows all traffic within itself 
         all_sg = ec2.SecurityGroup(self,
             "all_sg", 
@@ -224,7 +242,7 @@ class MSKFlinkStreamingStack(Stack):
             
         all_sg.add_ingress_rule(
           all_sg,
-          ec2.Port.all_traffic(), # TODO: Change to port just needed by MSK
+          ec2.Port.all_traffic(), # WARNING: Change to port just needed by MSK
           "allow all traffic in SG",
         )
 
@@ -238,16 +256,16 @@ class MSKFlinkStreamingStack(Stack):
         )
 
         # MSK Cluster - L2 Construct (Experimental)
-        msk_cluster = msk_alpha.Cluster(self, "msk-cluster",
-            cluster_name="msk-cluster",
+        msk_cluster = msk_alpha.Cluster(self, "iam-msk-cluster",
+            cluster_name="iam-msk-cluster",
             kafka_version=msk_alpha.KafkaVersion.V3_4_0,
             vpc=vpc,
             encryption_in_transit=msk_alpha.EncryptionInTransitConfig(
-                client_broker=msk_alpha.ClientBrokerEncryption.PLAINTEXT #TLS,
+                client_broker=msk_alpha.ClientBrokerEncryption.TLS,#PLAINTEXT
             ),
-            # client_authentication=msk_alpha.ClientAuthentication.sasl(
-            #     iam=True,
-            # ),
+            client_authentication=msk_alpha.ClientAuthentication.sasl(
+                iam=True,
+            ),
             configuration_info=msk_alpha.ClusterConfigurationInfo(
                 arn=cfn_configuration.attr_arn,
                 revision=1
@@ -266,13 +284,14 @@ class MSKFlinkStreamingStack(Stack):
         lambdaStack = LambdaStack(self, "LambdaStack",
             vpc=vpc,
             security_group=all_sg,
-            cluster_arn=msk_cluster.cluster_arn
+            cluster=msk_cluster
         )
         
         flinkStack = FlinkStack(self, "FlinkStack",
             vpc=vpc,
             security_group=all_sg,
-            bootstrap_brokers=msk_cluster.bootstrap_brokers#_sasl_iam # TODO: Parameterise so it changes with Auth method
+            bootstrap_brokers=msk_cluster.bootstrap_brokers_sasl_iam, # TODO: Parameterise so it changes with Auth method
+            cluster=msk_cluster
         )
         
 
