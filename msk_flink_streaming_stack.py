@@ -27,7 +27,9 @@ from aws_cdk import (
     aws_logs as logs,
     aws_sns as sns,
     aws_lambda_event_sources,
-    BundlingOptions
+    BundlingOptions,
+    custom_resources as cr,
+    CfnOutput
 )
 from constructs import Construct
 import aws_cdk.aws_kinesisanalytics_flink_alpha as flink # L2 Construct for Managed Apache Flink 
@@ -157,7 +159,7 @@ class LambdaStack(NestedStack):
                 "kafka-cluster:DescribeGroup"
             ],
             resources=[
-                "*" # WARNING: Tighten to MSK cluster
+                cluster.cluster_arn
             ]
             )
         )
@@ -280,7 +282,88 @@ class MSKFlinkStreamingStack(Stack):
             
         )
         
+        # IAM Role used by AWS Custom Resources
+        cr_iam_role = iam.Role(self, "cr-role",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+        )
         
+        cr_iam_role.add_to_policy(iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            actions=[
+                "kafka:DescribeCluster",
+                "kafka:UpdateConnectivity"
+            ],
+            resources=[
+                msk_cluster.cluster_arn
+            ]
+            )
+        )
+        
+        # Get Kafka Cluster current version
+        cluster_info=cr.AwsCustomResource(self, "DescribeKafkaCluster",
+            on_create=cr.AwsSdkCall(
+                service="Kafka",
+                action="DescribeCluster",
+                parameters={
+                    "ClusterArn": msk_cluster.cluster_arn,
+                },
+                physical_resource_id=cr.PhysicalResourceId.of("DescribeKafkaCluster")
+                ),
+            role=cr_iam_role
+        )
+        
+        cluster_info.node.add_dependency(cr_iam_role)
+        current_cluster_version = cluster_info.get_response_field("ClusterInfo.CurrentVersion")
+        
+        # AWS Custom Resource that enables multi-vpc private connectitvity
+        enable_msk_multivpc_resource = cr.AwsCustomResource(self, "EnableKafkaMultiVPC",
+            function_name="EnableMSKMultiVPC",
+            on_update=cr.AwsSdkCall(
+                service="Kafka",
+                action="UpdateConnectivity",
+                parameters={
+                    "ClusterArn": msk_cluster.cluster_arn,
+                    "CurrentVersion": current_cluster_version,
+                    "ConnectivityInfo": {
+                        "VpcConnectivity": {
+                            "ClientAuthentication": {
+                                "Sasl": {
+                                    "Iam": {
+                                        "Enabled": True
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                physical_resource_id=cr.PhysicalResourceId.of("ActivateKafkaMultiVPC")
+            ),
+            # on_delete=cr.AwsSdkCall(
+            #     service="Kafka",
+            #     action="UpdateConnectivity",
+            #     parameters={
+            #         "ClusterArn": msk_cluster.cluster_arn,
+            #         "CurrentVersion": current_cluster_version,
+            #         "ConnectivityInfo": {
+            #             "VpcConnectivity": {
+            #                 "ClientAuthentication": {
+            #                     "Sasl": {
+            #                         "Iam": {
+            #                             "Enabled": False
+            #                         }
+            #                     }
+            #                 }
+            #             }
+            #         }
+            #     },
+            #     physical_resource_id=cr.PhysicalResourceId.of("DeactivateKafkaMultiVPC")
+            # ),
+            role=cr_iam_role,
+            install_latest_aws_sdk=True
+        
+        )
+        enable_msk_multivpc_resource.node.add_dependency(cr_iam_role)
+
         lambdaStack = LambdaStack(self, "LambdaStack",
             vpc=vpc,
             security_group=all_sg,
