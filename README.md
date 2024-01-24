@@ -36,6 +36,7 @@ The workflow includes the following steps:
 ## Additions:
 - IAM Access Control for authentication and authorization to the MSK cluster from Lambda and Managed Flink. 
 - Updated to Flink 1.13.6
+- Enables MSK [Multi-VPC connectitvity](https://aws.amazon.com/blogs/big-data/connect-kafka-client-applications-securely-to-your-amazon-msk-cluster-from-different-vpcs-and-aws-accounts/)
 
 
 ## Prerequisites
