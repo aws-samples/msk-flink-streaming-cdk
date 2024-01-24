@@ -183,7 +183,7 @@ class LambdaStack(NestedStack):
             timeout=Duration.seconds(150),
             runtime=lambda_.Runtime.PYTHON_3_8,
             environment={'topicName':'kfp_sensor_topic',
-                         'mskClusterArn':cluster.attr_arn}, #cluster_arn
+                         'mskClusterArn':cluster.attr_arn},
             vpc=vpc,
             vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType('PRIVATE_WITH_EGRESS')),
             role=lambda_role,
@@ -244,10 +244,11 @@ class MSKFlinkStreamingStack(Stack):
             vpc=vpc,
             allow_all_outbound=True,
         )
-            
+        # WARNING for demonstration only: Change to port just needed by MSK. 
+        # As well only allow from security groups/ip's of consumers & producers
         all_sg.add_ingress_rule(
           all_sg,
-          ec2.Port.all_traffic(), # WARNING: Change to port just needed by MSK
+          ec2.Port.all_traffic(), 
           "allow all traffic in SG",
         )
 
@@ -363,7 +364,7 @@ class MSKFlinkStreamingStack(Stack):
         
         # Get MSK Bootstrap Broker Connection Strings
         # TODO: Parameterise so it changes with Auth method
-        msk_iam_bootstrap_brokers = cr.AwsCustomResource(self, 'getBootstrapBrokers',
+        msk_bootstrap_brokers = cr.AwsCustomResource(self, 'getBootstrapBrokers',
             on_update=cr.AwsSdkCall(
                 service='Kafka',
                 action='getBootstrapBrokers',
@@ -373,9 +374,15 @@ class MSKFlinkStreamingStack(Stack):
                 }
             ) ,
             role=cr_iam_role
-        ).get_response_field('BootstrapBrokerStringSaslIam') # need to change this to what connection type you want i.e. IAM, TLS etc.
+        )
         
-        msk_iam_bootstrap_brokers.node.add_dependency(cr_iam_role)
+        msk_bootstrap_brokers.node.add_dependency(cr_iam_role)
+        
+        # need to change this to what connection type you want i.e. IAM, TLS etc.
+        msk_iam_bootstrap_brokers = msk_bootstrap_brokers.get_response_field('BootstrapBrokerStringSaslIam') 
+        
+        # Output BootstrapBrokers IAM to Cloudformation Outputs
+        CfnOutput(self, "BootstrapBrokerStringSaslIam", value=msk_iam_bootstrap_brokers)
         
         # Lambda Producer & Consumer Stack
         lambdaStack = LambdaStack(self, "LambdaStack",
@@ -389,7 +396,6 @@ class MSKFlinkStreamingStack(Stack):
             vpc=vpc,
             security_group=all_sg,
             bootstrap_brokers=msk_iam_bootstrap_brokers,
-            
             cluster=msk_cluster
         )
 
