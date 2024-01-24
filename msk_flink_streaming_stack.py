@@ -5,7 +5,6 @@
 
 # To use the experimental L2 constructs for Managed Apache Flink and Managed Apache Kafka, install the following: 
 # pip install aws-cdk.aws_kinesisanalytics_flink_alpha
-# pip install aws-cdk.aws_msk_alpha
 
 from aws_cdk import (
     # Duration,
@@ -52,7 +51,7 @@ class FlinkStack(NestedStack):
             self,
             "flink-output-bucket",
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
-            # REMOVE FOR PRODUCTION
+            # Removal policy unsuitable for production
             removal_policy = RemovalPolicy.DESTROY,
             auto_delete_objects= True
         )
@@ -62,6 +61,7 @@ class FlinkStack(NestedStack):
             self,
             "flink-code-bucket",
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            # Removal policy unsuitable for production
             removal_policy = RemovalPolicy.DESTROY,
             auto_delete_objects= True
         )
@@ -76,6 +76,8 @@ class FlinkStack(NestedStack):
             assumed_by=iam.ServicePrincipal("kinesisanalytics.amazonaws.com"),
         )
         
+        # Tighten per different consumers/producers & your security requirements
+        # See: https://docs.aws.amazon.com/msk/latest/developerguide/iam-access-control.html
         flink_app_role.add_to_policy(iam.PolicyStatement(
             effect=iam.Effect.ALLOW,
             actions=[
@@ -88,7 +90,7 @@ class FlinkStack(NestedStack):
                 "kafka-cluster:DescribeGroup"
             ],
             resources=[
-                "*" # WARNING: Tighten to MSK cluster
+               "*" 
             ]
             )
         )
@@ -136,17 +138,18 @@ class LambdaStack(NestedStack):
         super().__init__(scope, construct_id, **kwargs)
     
         # IAM Role used by Lambda functions
-        lambda_role = iam.Role(
-            self,
-            "lambda-role",
+        lambda_role = iam.Role(self, "lambda-role",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
             managed_policies=[
-                              iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaMSKExecutionRole"),
-                              iam.ManagedPolicy.from_aws_managed_policy_name("AmazonSNSFullAccess"),
-                              iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaBasicExecutionRole"),
-                               ],
+                    # Tighten per your security requirements
+                    iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaMSKExecutionRole"),
+                    iam.ManagedPolicy.from_aws_managed_policy_name("AmazonSNSFullAccess"),
+                    iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaBasicExecutionRole"),
+                ],
         )
         
+        # Tighten per different consumers/producers & your security requirements
+        # See: https://docs.aws.amazon.com/msk/latest/developerguide/iam-access-control.html
         lambda_role.add_to_policy(iam.PolicyStatement(
             effect=iam.Effect.ALLOW,
             actions=[
@@ -159,7 +162,7 @@ class LambdaStack(NestedStack):
                 "kafka-cluster:DescribeGroup"
             ],
             resources=[
-                cluster.cluster_arn
+                "*" 
             ]
             )
         )
@@ -180,7 +183,7 @@ class LambdaStack(NestedStack):
             timeout=Duration.seconds(150),
             runtime=lambda_.Runtime.PYTHON_3_8,
             environment={'topicName':'kfp_sensor_topic',
-                         'mskClusterArn':cluster.cluster_arn},
+                         'mskClusterArn':cluster.attr_arn}, #cluster_arn
             vpc=vpc,
             vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType('PRIVATE_WITH_EGRESS')),
             role=lambda_role,
@@ -207,7 +210,7 @@ class LambdaStack(NestedStack):
         )
         
         sns_lambdaFn.add_event_source(aws_lambda_event_sources.ManagedKafkaEventSource(
-            cluster_arn=cluster.cluster_arn,
+            cluster_arn=cluster.attr_arn, #cluster_arn
             topic='kfp_sns_topic',
             starting_position=lambda_.StartingPosition.TRIM_HORIZON
         ))
@@ -257,29 +260,41 @@ class MSKFlinkStreamingStack(Stack):
             server_properties=server_properties
         )
 
-        # MSK Cluster - L2 Construct (Experimental)
-        msk_cluster = msk_alpha.Cluster(self, "iam-msk-cluster",
-            cluster_name="iam-msk-cluster",
-            kafka_version=msk_alpha.KafkaVersion.V3_4_0,
-            vpc=vpc,
-            encryption_in_transit=msk_alpha.EncryptionInTransitConfig(
-                client_broker=msk_alpha.ClientBrokerEncryption.TLS,#PLAINTEXT
+        
+        # MSK Cluster L1 Construct
+        msk_cluster = msk.CfnCluster(self, "msk-cluster",
+            cluster_name="msk-cluster",
+            number_of_broker_nodes=len(vpc.private_subnets),
+            kafka_version='3.4.0',
+            broker_node_group_info=msk.CfnCluster.BrokerNodeGroupInfoProperty(
+                instance_type="kafka.m5.large",
+                storage_info=msk.CfnCluster.StorageInfoProperty(
+                    ebs_storage_info=msk.CfnCluster.EBSStorageInfoProperty(
+                        volume_size=50
+                    )
+                ),
+                client_subnets=[
+                    subnet.subnet_id
+                    for subnet
+                    in vpc.private_subnets],
+                security_groups=[all_sg.security_group_id], 
             ),
-            client_authentication=msk_alpha.ClientAuthentication.sasl(
-                iam=True,
+            encryption_info = msk.CfnCluster.EncryptionInfoProperty(
+                encryption_in_transit=msk.CfnCluster.EncryptionInTransitProperty(
+                    client_broker="TLS",
+                )
             ),
-            configuration_info=msk_alpha.ClusterConfigurationInfo(
+            configuration_info=msk.CfnCluster.ConfigurationInfoProperty(
                 arn=cfn_configuration.attr_arn,
                 revision=1
             ),
-            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType('PRIVATE_WITH_EGRESS')),
-            security_groups=[all_sg],
-            instance_type=ec2.InstanceType("kafka.m5.large"),
-            ebs_storage_info = msk_alpha.EbsStorageInfo(
-                volume_size=50
+            client_authentication=msk.CfnCluster.ClientAuthenticationProperty(
+                sasl=msk.CfnCluster.SaslProperty(
+                    iam=msk.CfnCluster.IamProperty(
+                        enabled=True
+                    ),
+                ),
             ),
-            removal_policy=RemovalPolicy.DESTROY,
-            
         )
         
         # IAM Role used by AWS Custom Resources
@@ -291,10 +306,11 @@ class MSKFlinkStreamingStack(Stack):
             effect=iam.Effect.ALLOW,
             actions=[
                 "kafka:DescribeCluster",
-                "kafka:UpdateConnectivity"
+                "kafka:UpdateConnectivity",
+                "kafka:GetBootstrapBrokers"
             ],
             resources=[
-                msk_cluster.cluster_arn
+                msk_cluster.attr_arn
             ]
             )
         )
@@ -305,7 +321,7 @@ class MSKFlinkStreamingStack(Stack):
                 service="Kafka",
                 action="DescribeCluster",
                 parameters={
-                    "ClusterArn": msk_cluster.cluster_arn,
+                    "ClusterArn": msk_cluster.attr_arn, #cluster_arn
                 },
                 physical_resource_id=cr.PhysicalResourceId.of("DescribeKafkaCluster")
                 ),
@@ -315,14 +331,14 @@ class MSKFlinkStreamingStack(Stack):
         cluster_info.node.add_dependency(cr_iam_role)
         current_cluster_version = cluster_info.get_response_field("ClusterInfo.CurrentVersion")
         
-        # AWS Custom Resource that enables multi-vpc private connectitvity
+        # Enable MSK multi-vpc private connectitvity
         enable_msk_multivpc_resource = cr.AwsCustomResource(self, "EnableKafkaMultiVPC",
             function_name="EnableMSKMultiVPC",
             on_update=cr.AwsSdkCall(
                 service="Kafka",
                 action="UpdateConnectivity",
                 parameters={
-                    "ClusterArn": msk_cluster.cluster_arn,
+                    "ClusterArn": msk_cluster.attr_arn,#cluster_arn,
                     "CurrentVersion": current_cluster_version,
                     "ConnectivityInfo": {
                         "VpcConnectivity": {
@@ -338,44 +354,45 @@ class MSKFlinkStreamingStack(Stack):
                 },
                 physical_resource_id=cr.PhysicalResourceId.of("ActivateKafkaMultiVPC")
             ),
-            # on_delete=cr.AwsSdkCall(
-            #     service="Kafka",
-            #     action="UpdateConnectivity",
-            #     parameters={
-            #         "ClusterArn": msk_cluster.cluster_arn,
-            #         "CurrentVersion": current_cluster_version,
-            #         "ConnectivityInfo": {
-            #             "VpcConnectivity": {
-            #                 "ClientAuthentication": {
-            #                     "Sasl": {
-            #                         "Iam": {
-            #                             "Enabled": False
-            #                         }
-            #                     }
-            #                 }
-            #             }
-            #         }
-            #     },
-            #     physical_resource_id=cr.PhysicalResourceId.of("DeactivateKafkaMultiVPC")
-            # ),
             role=cr_iam_role,
-            install_latest_aws_sdk=True
-        
         )
+        
         enable_msk_multivpc_resource.node.add_dependency(cr_iam_role)
+        enable_msk_multivpc_resource.node.add_dependency(msk_cluster)
 
+        
+        # Get MSK Bootstrap Broker Connection Strings
+        # TODO: Parameterise so it changes with Auth method
+        msk_iam_bootstrap_brokers = cr.AwsCustomResource(self, 'getBootstrapBrokers',
+            on_update=cr.AwsSdkCall(
+                service='Kafka',
+                action='getBootstrapBrokers',
+                physical_resource_id=cr.PhysicalResourceId.of('getMSKBootstrapBrokers'),
+                parameters = {
+                    "ClusterArn": msk_cluster.attr_arn
+                }
+            ) ,
+            role=cr_iam_role
+        ).get_response_field('BootstrapBrokerStringSaslIam') # need to change this to what connection type you want i.e. IAM, TLS etc.
+        
+        msk_iam_bootstrap_brokers.node.add_dependency(cr_iam_role)
+        
+        # Lambda Producer & Consumer Stack
         lambdaStack = LambdaStack(self, "LambdaStack",
             vpc=vpc,
             security_group=all_sg,
             cluster=msk_cluster
         )
         
+        # Flink Consumer Stack
         flinkStack = FlinkStack(self, "FlinkStack",
             vpc=vpc,
             security_group=all_sg,
-            bootstrap_brokers=msk_cluster.bootstrap_brokers_sasl_iam, # TODO: Parameterise so it changes with Auth method
+            bootstrap_brokers=msk_iam_bootstrap_brokers,
+            
             cluster=msk_cluster
         )
+
         
 
 
