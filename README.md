@@ -81,7 +81,8 @@ cdk deploy --parameters privateCaArn=arn:aws:acm-pca:<AWS_REGION>:<AWS_ACCOUNT_I
 Follow [instructions here](https://docs.aws.amazon.com/msk/latest/developerguide/iam-access-control.html#configure-clients-for-iam-access-control)
 
 ### Mutual TLS Authentication
-Follow [instructions here](https://docs.aws.amazon.com/msk/latest/developerguide/msk-authentication.html#msk-authentication-client)
+Follow [instructions here](https://docs.aws.amazon.com/msk/latest/developerguide/msk-authentication.html#msk-authentication-client).
+
 For step 4 On Amazon Linux 2, truststore can be copied as: 
 ```
 cp /usr/lib/jvm/java-11-amazon-corretto.x86_64/lib/security/cacerts kafka.client.truststore.jks
