@@ -35,12 +35,14 @@ The workflow includes the following steps:
 
 ## Additions:
 - IAM Access Control for authentication and authorization to the MSK cluster from Lambda and Managed Flink. 
+- Enabled for Mutual TLS authentication
 - Updated to Flink 1.13.6
 - Enables MSK [Multi-VPC connectitvity](https://aws.amazon.com/blogs/big-data/connect-kafka-client-applications-securely-to-your-amazon-msk-cluster-from-different-vpcs-and-aws-accounts/)
 
 
 ## Prerequisites
 - Maven 
+- (optional) An AWS Private Certificate Authority 
 
 ## To Run: 
 1. Install the required dependencies:
@@ -68,3 +70,16 @@ cdk bootstrap
 cdk deploy
 ```
 
+or if using TLS with a Private CA:
+```
+cdk deploy --parameters privateCaArn=arn:aws:acm-pca:<AWS_REGION>:<AWS_ACCOUNT_ID>:certificate-authority/XXXXXX-XXXX-XXXX-XXXXXX-XXXXXXXX
+```
+## Authentication and authorization
+
+### IAM Access Control
+Follow [instructions here](https://docs.aws.amazon.com/msk/latest/developerguide/iam-access-control.html#configure-clients-for-iam-access-control)
+
+### Mutual TLS Authentication
+1. Follow [instructions here](https://docs.aws.amazon.com/msk/latest/developerguide/msk-authentication.html#msk-authentication-client)
+    a. For step 4 On Amazon Linux 2, truststore can be copied as: 
+    ```cp /usr/lib/jvm/java-11-amazon-corretto.x86_64/lib/security/cacerts kafka.client.truststore.jks```

@@ -28,12 +28,13 @@ from aws_cdk import (
     aws_lambda_event_sources,
     BundlingOptions,
     custom_resources as cr,
-    CfnOutput
+    CfnOutput,
+    CfnParameter
 )
 from constructs import Construct
 import aws_cdk.aws_kinesisanalytics_flink_alpha as flink # L2 Construct for Managed Apache Flink 
 import aws_cdk.aws_msk_alpha as msk_alpha # L2 Construct for Managed Apache Kafka
-
+import time
 
 class FlinkStack(NestedStack):
     def __init__(self, 
@@ -230,6 +231,9 @@ class LambdaStack(NestedStack):
 class MSKFlinkStreamingStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
+        
+        private_ca_arn = CfnParameter(self, "privateCaArn", type="String",
+            description="The ARN of the Private Certificate Authority.")
 
         vpc = ec2.Vpc(self, 
             "MSK-VPC",
@@ -261,6 +265,13 @@ class MSKFlinkStreamingStack(Stack):
             server_properties=server_properties
         )
 
+        # Conditional TLS property
+        tls_prop = None
+        if private_ca_arn.value_as_string:
+          tls_prop = msk.CfnCluster.TlsProperty(
+            certificate_authority_arn_list=[private_ca_arn.value_as_string], 
+            enabled=True
+          )
         
         # MSK Cluster L1 Construct
         msk_cluster = msk.CfnCluster(self, "msk-cluster",
@@ -287,7 +298,7 @@ class MSKFlinkStreamingStack(Stack):
             ),
             configuration_info=msk.CfnCluster.ConfigurationInfoProperty(
                 arn=cfn_configuration.attr_arn,
-                revision=1
+                revision=cfn_configuration.attr_latest_revision_revision
             ),
             client_authentication=msk.CfnCluster.ClientAuthenticationProperty(
                 sasl=msk.CfnCluster.SaslProperty(
@@ -295,6 +306,8 @@ class MSKFlinkStreamingStack(Stack):
                         enabled=True
                     ),
                 ),
+                tls=tls_prop
+                
             ),
         )
         
@@ -317,21 +330,25 @@ class MSKFlinkStreamingStack(Stack):
         )
         
         # Get Kafka Cluster current version
-        cluster_info=cr.AwsCustomResource(self, "DescribeKafkaCluster",
-            on_create=cr.AwsSdkCall(
+        # Always need most up to date version number. Use current_time to force creation of new custom resource. 
+        current_time = str(int(time.time()))
+        cluster_info=cr.AwsCustomResource(self, "DescribeKafkaCluster"+current_time,
+            on_update=cr.AwsSdkCall(
                 service="Kafka",
                 action="DescribeCluster",
                 parameters={
-                    "ClusterArn": msk_cluster.attr_arn, #cluster_arn
+                    "ClusterArn": msk_cluster.attr_arn,
                 },
-                physical_resource_id=cr.PhysicalResourceId.of("DescribeKafkaCluster")
+                physical_resource_id=cr.PhysicalResourceId.of("DescribeKafkaCluster"+current_time)
                 ),
             role=cr_iam_role
         )
         
         cluster_info.node.add_dependency(cr_iam_role)
+        cluster_info.node.add_dependency(msk_cluster)
         current_cluster_version = cluster_info.get_response_field("ClusterInfo.CurrentVersion")
-        
+        CfnOutput(self, "CurrentClusterVersion", value=current_cluster_version)
+
         # Enable MSK multi-vpc private connectitvity
         enable_msk_multivpc_resource = cr.AwsCustomResource(self, "EnableKafkaMultiVPC",
             function_name="EnableMSKMultiVPC",
@@ -348,9 +365,12 @@ class MSKFlinkStreamingStack(Stack):
                                     "Iam": {
                                         "Enabled": True
                                     }
+                                },
+                                "Tls": {
+                                  "Enabled": True
                                 }
-                            }
-                        }
+                              }
+                            },
                     }
                 },
                 physical_resource_id=cr.PhysicalResourceId.of("ActivateKafkaMultiVPC")
@@ -363,7 +383,6 @@ class MSKFlinkStreamingStack(Stack):
 
         
         # Get MSK Bootstrap Broker Connection Strings
-        # TODO: Parameterise so it changes with Auth method
         msk_bootstrap_brokers = cr.AwsCustomResource(self, 'getBootstrapBrokers',
             on_update=cr.AwsSdkCall(
                 service='Kafka',
@@ -378,11 +397,14 @@ class MSKFlinkStreamingStack(Stack):
         
         msk_bootstrap_brokers.node.add_dependency(cr_iam_role)
         
+        # Output BootstrapBrokers IAM to Cloudformation Outputs
         # need to change this to what connection type you want i.e. IAM, TLS etc.
         msk_iam_bootstrap_brokers = msk_bootstrap_brokers.get_response_field('BootstrapBrokerStringSaslIam') 
-        
-        # Output BootstrapBrokers IAM to Cloudformation Outputs
         CfnOutput(self, "BootstrapBrokerStringSaslIam", value=msk_iam_bootstrap_brokers)
+        
+        # Output BootstrapBrokers TLS to Cloudformation Outputs
+        msk_tls_bootstrap_brokers = msk_bootstrap_brokers.get_response_field('BootstrapBrokerStringTls')
+        CfnOutput(self, "BootstrapBrokerStringTls", value=msk_tls_bootstrap_brokers)
         
         # Lambda Producer & Consumer Stack
         lambdaStack = LambdaStack(self, "LambdaStack",

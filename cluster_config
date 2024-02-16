@@ -1,1 +1,2 @@
 auto.create.topics.enable = true
+allow.everyone.if.no.acl.found = false

@@ -44,7 +44,7 @@ def lambda_handler(event, context):
     #                          bootstrap_servers=response["BootstrapBrokerString"],#
     #                          value_serializer=lambda x: x.encode("utf-8"),
                             #  )
-                            
+
     for _ in range(1, 100):
        
         data = json.dumps({
